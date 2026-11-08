@@ -1,0 +1,28 @@
+{
+  "description": "Experimental PICO XR global metre coordinates; verify on target firmware before use.",
+  "axis_map": [[0, 0, -1], [-1, 0, 0], [0, 1, 0]],
+  "units": "m",
+  "joint_space": "global",
+  "source_units": "metres",
+  "source_joint_space": "base_space",
+  "allow_unvalidated_output": false,
+  "output_base_target": false,
+  "joint_map": {
+    "pelvis": "Hips", "spine3": "Chest", "head": "Head",
+    "left_shoulder": "LeftShoulder", "right_shoulder": "RightShoulder",
+    "left_elbow": "LeftElbow", "right_elbow": "RightElbow",
+    "left_wrist": "LeftWrist", "right_wrist": "RightWrist",
+    "left_hip": "LeftHip", "right_hip": "RightHip",
+    "left_knee": "LeftKnee", "right_knee": "RightKnee",
+    "left_ankle": "LeftAnkle", "right_ankle": "RightAnkle",
+    "left_foot": "LeftFoot", "right_foot": "RightFoot"
+  },
+  "max_input_age_s": 0.25,
+  "max_feedback_age_s": 0.25,
+  "max_solve_s": 0.2,
+  "max_joint_delta_rad": 0.05,
+  "max_gripper_delta_m": 0.002,
+  "gripper_trigger_zero_m": 0.0,
+  "gripper_trigger_one_m": 0.05,
+  "solver": "daqp"
+}

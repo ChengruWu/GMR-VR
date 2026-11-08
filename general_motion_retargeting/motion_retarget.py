@@ -21,10 +21,12 @@ class GeneralMotionRetargeting:
         damping: float = 5e-1,  # change from 1e-1 to 1e-2.
         verbose: bool = True,
         use_velocity_limit: bool = False,
+        model_path=None,
+        config_path=None,
     ) -> None:
 
         # load the robot model
-        self.xml_file = str(ROBOT_XML_DICT[tgt_robot])
+        self.xml_file = str(model_path if model_path is not None else ROBOT_XML_DICT[tgt_robot])
         if verbose:
             print("Use robot model: ", self.xml_file)
         self.model = mj.MjModel.from_xml_path(self.xml_file)
@@ -57,10 +59,11 @@ class GeneralMotionRetargeting:
                 print(f"Motor ID {i}: {motor_name}")
 
         # Load the IK config
-        with open(IK_CONFIG_DICT[src_human][tgt_robot]) as f:
+        config_file = config_path if config_path is not None else IK_CONFIG_DICT[src_human][tgt_robot]
+        with open(config_file, encoding="utf-8") as f:
             ik_config = json.load(f)
         if verbose:
-            print("Use IK config: ", IK_CONFIG_DICT[src_human][tgt_robot])
+            print("Use IK config: ", config_file)
 
         # compute the scale ratio based on given human height and the assumption in the IK config
         if actual_human_height is not None:

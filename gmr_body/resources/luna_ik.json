@@ -1,0 +1,178 @@
+{
+  "_description": "Full-body M1 source-frame to Gento Luna routing through GMR scale, offsets, tasks and IK. Human positions use metres and global wxyz quaternions. Base output is planar pose; wheels remain passive. Calibration revision: stronger Hips/base anchoring and 5 mm proactive collision margin to avoid tangent-contact locking.",
+  "_arm_frame_calibration": {
+    "quaternion_order": "wxyz",
+    "rotation_rule": "R_target = R_source * R_offset",
+    "reference_joint_angles_rad": {
+      "Joint1_L": 1.5707963267948966,
+      "Joint1_R": -1.5707963267948966,
+      "Joint2_L": -1.5707963267948966,
+      "Joint2_R": -1.5707963267948966
+    },
+    "reference_note": "Reuses the fixed Xsens BVH-to-Luna arm-frame offsets. First-frame alignment is a single shared yaw/translation transform; the Hips base offset below is then applied exactly once by GMR.",
+    "tcp_position_note": "TCP is 0.087 m distal to the Link5/6/7 wrist centre; its position offset is expressed in the calibrated target TCP frame."
+  },
+  "robot_root_name": "Gento Luna_Leg_J6_Link",
+  "human_root_name": "Hips",
+  "ground_height": 0.0,
+  "human_height_assumption": 1.8,
+  "use_ik_match_table1": true,
+  "use_ik_match_table2": false,
+  "human_scale_table": {
+    "Hips": 1.0,
+    "Chest": 1.0,
+    "Head": 1.0,
+    "LeftShoulder": 1.0,
+    "RightShoulder": 1.0,
+    "LeftElbow": 1.0,
+    "RightElbow": 1.0,
+    "LeftWrist": 1.0,
+    "RightWrist": 1.0
+  },
+  "ik_match_table1": {
+    "base_Link": [
+      "Hips",
+      [500.0, 500.0, 0.0],
+      [0.0, 0.0, 100.0],
+      [-0.107, 0.0, 0.0],
+      [1.0, 0.0, 0.0, 0.0]
+    ],
+    "Gento Luna_Leg_J6_Link": [
+      "Chest",
+      [30.0, 30.0, 0.0],
+      5.0,
+      [0.0, 0.0, -0.10049642754471093],
+      [1.0, 0.0, 0.0, 0.0]
+    ],
+    "Link2_L": [
+      "LeftShoulder",
+      5.0,
+      1.0,
+      [0.0, 0.0, 0.0],
+      [0.5, -0.5, 0.5, -0.5]
+    ],
+    "Link2_R": [
+      "RightShoulder",
+      5.0,
+      1.0,
+      [0.0, 0.0, 0.0],
+      [0.5, -0.5, -0.5, 0.5]
+    ],
+    "Link4_L": [
+      "LeftElbow",
+      10.0,
+      1.0,
+      [0.0, 0.0, 0.0],
+      [0.5, 0.5, 0.5, 0.5]
+    ],
+    "Link4_R": [
+      "RightElbow",
+      10.0,
+      1.0,
+      [0.0, 0.0, 0.0],
+      [0.5, 0.5, -0.5, -0.5]
+    ],
+    "TCP_Link_L": [
+      "LeftWrist",
+      50.0,
+      10.0,
+      [0.0, 0.0, 0.087],
+      [0.0, -0.7071067811865476, 0.7071067811865476, 0.0]
+    ],
+    "TCP_Link_R": [
+      "RightWrist",
+      50.0,
+      10.0,
+      [0.0, 0.0, 0.087],
+      [0.0, 0.7071067811865476, 0.7071067811865476, 0.0]
+    ],
+    "Head_J2_Link": [
+      "Head",
+      0.0,
+      [0.0, 2.0, 2.0],
+      [0.0, 0.0, 0.0],
+      [1.0, 0.0, 0.0, 0.0]
+    ]
+  },
+  "ik_match_table2": {},
+  "full_body_adapter": {
+    "joint_name_field": "clean_name",
+    "nominal_dt_s": 0.03333333333333333,
+    "max_frame_gap_s": 0.25,
+    "max_cumulative_ik_iterations": 3,
+    "virtual_initialization_ticks": 36,
+    "posture_cost": 0.01,
+    "source_orientation_weight_scales": {
+      "reconstructed_from_sparse": {
+        "LeftShoulder": 0.2,
+        "RightShoulder": 0.2,
+        "LeftElbow": 0.2,
+        "RightElbow": 0.2,
+        "LeftWrist": 0.2,
+        "RightWrist": 0.2
+      }
+    },
+    "orientation_weight_policy_note": "Estimated sparse-body segment directions receive 0.2x orientation cost after baseline comparison; positions remain unchanged. SDK full-body source kinds retain the configured orientation costs. All position/orientation residuals remain exported.",
+    "group_budgets": {
+      "base_translation": {"velocity": 0.35, "acceleration": 0.75, "units": "m"},
+      "base_yaw": {"velocity": 0.75, "acceleration": 1.5, "units": "rad"},
+      "support": {"velocity": 0.6, "acceleration": 2.5, "units": "rad"},
+      "head": {"velocity": 1.0, "acceleration": 3.0, "units": "rad"},
+      "arms": {"velocity": 2.4, "acceleration": 12.0, "max_tick_delta": 0.0799, "units": "rad"},
+      "fingers": {"velocity": 0.05, "acceleration": 0.15, "units": "m"}
+    },
+    "reference": {
+      "yaw_only": true,
+      "align_human_hips_to_robot_base": true,
+      "base_offset_applied_by_gmr_once": [-0.107, 0.0, 0.0],
+      "required_poses": ["Hips", "Chest", "Head"],
+      "arm_poses_by_side": ["Shoulder", "Elbow", "Wrist"]
+    },
+    "gripper": {
+      "trigger_range": [0.0, 1.0],
+      "trigger_zero_m": 0.0,
+      "trigger_one_m": 0.05,
+      "mimic_pairs": [
+        ["left_gripper_left_finger_joint", "left_gripper_right_finger_joint"],
+        ["right_gripper_left_finger_joint", "right_gripper_right_finger_joint"]
+      ]
+    },
+    "self_collision": {
+      "enabled": true,
+      "geom_group": 0,
+      "gain": 0.85,
+      "minimum_distance_from_collisions": 0.005,
+      "collision_detection_distance": 0.05,
+      "tolerance_m": 0.000001,
+      "solver_clearance_margin_m": 0.005,
+      "body_groups": {
+        "support": [
+          "Gento Luna_Leg_J1_Link",
+          "Gento Luna_Leg_J2_Link",
+          "Gento Luna_Leg_J3_Link",
+          "Gento Luna_Leg_J4_Link",
+          "Gento Luna_Leg_J5_Link",
+          "Gento Luna_Leg_J6_Link"
+        ],
+        "head": ["Head_J1_Link", "Head_J2_Link"],
+        "left_arm": [
+          "Link1_L", "Link2_L", "Link3_L", "Link4_L", "Link5_L", "Link6_L", "Link7_L",
+          "left_gripper_base", "left_gripper_left_finger", "left_gripper_right_finger"
+        ],
+        "right_arm": [
+          "Link1_R", "Link2_R", "Link3_R", "Link4_R", "Link5_R", "Link6_R", "Link7_R",
+          "right_gripper_base", "right_gripper_left_finger", "right_gripper_right_finger"
+        ]
+      },
+      "pairs": [
+        ["support", "head"],
+        ["support", "left_arm"],
+        ["support", "right_arm"],
+        ["head", "left_arm"],
+        ["head", "right_arm"],
+        ["left_arm", "right_arm"]
+      ],
+      "coverage_note": "Selected direct geoms check support/head/arm cross-group pairs. The base, wheel assembly and support-to-base internal geometry are not covered and require separate scene-specific validation."
+    }
+  }
+}
