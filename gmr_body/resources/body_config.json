@@ -7,6 +7,8 @@
   "source_joint_space": "base_space",
   "allow_unvalidated_output": false,
   "output_base_target": false,
+  "relative_task_alignment": false,
+  "relative_position_scale": 0.5,
   "joint_map": {
     "pelvis": "Hips", "spine3": "Chest", "head": "Head",
     "left_shoulder": "LeftShoulder", "right_shoulder": "RightShoulder",
@@ -22,6 +24,8 @@
   "max_solve_s": 0.2,
   "max_joint_delta_rad": 0.05,
   "max_gripper_delta_m": 0.002,
+  "feedback_gripper_limit_tolerance_m": 0.0,
+  "feedback_joint_limit_tolerance_rad": 0.0,
   "gripper_trigger_zero_m": 0.0,
   "gripper_trigger_one_m": 0.05,
   "solver": "daqp"

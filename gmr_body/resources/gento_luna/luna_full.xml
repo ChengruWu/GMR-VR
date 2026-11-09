@@ -183,27 +183,27 @@
       </body>
       <body name="Gento Luna_Leg_J1_Link" pos="0.107 0 0.16" quat="0.499998 0.5 0.500002 0.5">
         <inertial pos="-0.00305605 0.118796 0.00090574" quat="0.702449 0.711578 -0.0138067 -0.00562895" mass="6.04186" diaginertia="0.0501725 0.046065 0.0191557" />
-        <joint name="Gento Luna_Leg_J1_Joint" range="-0.0017453292519943296 0.0017453292519943296" actuatorfrcrange="-217 217" />
+        <joint name="Gento Luna_Leg_J1_Joint" range="-0.191986218 0.191986218" actuatorfrcrange="-217 217" />
         <geom quat="1 0 0 0" type="mesh" contype="0" conaffinity="0" group="1" rgba="0 1 0 1" density="0" mesh="mesh_c7d6370894b187f7" />
         <geom quat="1 0 0 0" type="mesh" rgba="0 1 0 1" mesh="mesh_c7d6370894b187f7" />
         <body name="Gento Luna_Leg_J2_Link" pos="0 0.165 0" quat="0.707105 0 -0.707108 0">
           <inertial pos="0.00164163 0.204806 0.00707016" quat="0.721809 0.69199 0.00892171 -0.00785122" mass="7.22131" diaginertia="0.136259 0.134381 0.0260726" />
-          <joint name="Gento Luna_Leg_J2_Joint" range="-0.0017453292519943296 0.0017453292519943296" actuatorfrcrange="-217 217" />
+          <joint name="Gento Luna_Leg_J2_Joint" range="-1.570796327 1.570796327" actuatorfrcrange="-217 217" />
           <geom pos="0 0 0" quat="1 0 0 0" type="mesh" contype="0" conaffinity="0" group="1" rgba="0 0 1 1" density="0" mesh="mesh_3beb7f52f70edaf5" />
           <geom pos="0 0 0" quat="1 0 0 0" type="mesh" rgba="0 0 1 1" mesh="mesh_3beb7f52f70edaf5" />
           <body name="Gento Luna_Leg_J3_Link" pos="0 0.3 0">
             <inertial pos="-0.00357006 0.145736 -0.00024996" quat="0.707266 0.706918 0.00473186 0.00443219" mass="4.67122" diaginertia="0.0982253 0.0882848 0.0305314" />
-            <joint name="Gento Luna_Leg_J3_Joint" range="-0.17453292519943295 0" actuatorfrcrange="-217 217" />
+            <joint name="Gento Luna_Leg_J3_Joint" range="-2.443460953 1.047197551" actuatorfrcrange="-217 217" />
             <geom pos="0 0 0" quat="1 0 0 0" type="mesh" contype="0" conaffinity="0" group="1" rgba="1 0 0 1" density="0" mesh="mesh_d2326888a320adc3" />
             <geom pos="0 0 0" quat="1 0 0 0" type="mesh" rgba="1 0 0 1" mesh="mesh_d2326888a320adc3" />
             <body name="Gento Luna_Leg_J4_Link" pos="0 0.3 0">
               <inertial pos="-0.0369066 -7.427e-05 0.0101986" quat="0.470941 0.527882 0.527316 0.470631" mass="5.90046" diaginertia="0.0299755 0.0291456 0.0100734" />
-              <joint name="Gento Luna_Leg_J4_Joint" range="0 0.17453292519943295" actuatorfrcrange="-108 108" />
+              <joint name="Gento Luna_Leg_J4_Joint" range="-0.959931089 1.919862177" actuatorfrcrange="-108 108" />
               <geom quat="1 0 0 0" type="mesh" contype="0" conaffinity="0" group="1" rgba="0 1 0 1" density="0" mesh="mesh_5f72e6a1449a67e0" />
               <geom quat="1 0 0 0" type="mesh" rgba="0 1 0 1" mesh="mesh_5f72e6a1449a67e0" />
               <body name="Gento Luna_Leg_J5_Link" quat="0.707105 0 0.707108 0">
                 <inertial pos="-0.00154757 0.127669 -0.015651" quat="0.92749 0.373709 0.00372639 -0.00945883" mass="3.76178" diaginertia="0.0342898 0.0242016 0.016757" />
-                <joint name="Gento Luna_Leg_J5_Joint" range="-0.13962634015954636 0.13962634015954636" actuatorfrcrange="-108 108" />
+                <joint name="Gento Luna_Leg_J5_Joint" range="-0.523598776 0.523598776" actuatorfrcrange="-108 108" />
                 <geom type="mesh" contype="0" conaffinity="0" group="1" rgba="0 0 1 1" density="0" mesh="mesh_c59a3e3c25fe7dfc" />
                 <geom type="mesh" rgba="0 0 1 1" mesh="mesh_c59a3e3c25fe7dfc" />
                 <body name="Gento Luna_Leg_J6_Link" quat="0.499998 -0.5 -0.5 -0.500002">

@@ -6,6 +6,7 @@ import os
 import time
 from pathlib import Path
 
+import mink
 import numpy as np
 from mink.limits import Constraint, Limit
 from scipy.spatial.transform import Rotation
@@ -38,6 +39,18 @@ class BodyBackend:
 
         path = Path(config_path or os.environ.get("GMR_BODY_CONFIG", RESOURCES / "body_config.json"))
         self.config = json.loads(path.read_text(encoding="utf-8"))
+        for key in ("feedback_gripper_limit_tolerance_m", "feedback_joint_limit_tolerance_rad"):
+            tolerance = self.config.get(key, 0.0)
+            if (isinstance(tolerance, bool) or not isinstance(tolerance, (int, float))
+                    or not math.isfinite(tolerance) or not 0 <= tolerance <= 0.001):
+                raise ValueError(f"{key} must be between 0 and 0.001")
+        enabled = self.config.get("relative_task_alignment", False)
+        if not isinstance(enabled, bool):
+            raise ValueError("relative_task_alignment must be boolean")
+        scale = self.config.get("relative_position_scale", 0.5)
+        if (isinstance(scale, bool) or not isinstance(scale, (int, float))
+                or not math.isfinite(scale) or not 0 < scale <= 1):
+            raise ValueError("relative_position_scale must be greater than 0 and at most 1")
         self.contract = json.loads((RESOURCES / "gento_luna" / "joint_limits.json").read_text(encoding="utf-8"))
         self.joints = sorted((r for r in self.contract if r["ctrl_index_24d"] is not None),
                              key=lambda r: r["ctrl_index_24d"])
@@ -61,10 +74,47 @@ class BodyBackend:
         self._frame_seq = None
         self._reference_space = None
         self._transform = None
+        self._relative_reference = None
         self._locked = False
 
     def close(self):
         self.reset()
+
+    def _mapped_poses(self, poses, rotation, translation):
+        return {name: [rotation.apply(poses[name][0]) + translation,
+                       (rotation * Rotation.from_quat(poses[name][1], scalar_first=True)).as_quat(scalar_first=True)]
+                for name in self.engine.human_scale_table}
+
+    def _capture_relative_reference(self, mapped):
+        if self.engine.use_ik_match_table2:
+            raise ValueError("relative task alignment does not support a second task table")
+        self.engine.update_targets(mapped)
+        reference = {}
+        for robot_name, row in self.engine.ik_match_table1.items():
+            name = row[0]
+            if name not in self.engine.human_body_to_task1:
+                continue
+            pos, quat = self.engine.scaled_human_data[name]
+            body_id = self.engine.model.body(robot_name).id
+            reference[name] = (
+                np.asarray(pos).copy(), Rotation.from_quat(quat, scalar_first=True),
+                self.engine.configuration.data.xpos[body_id].copy(),
+                Rotation.from_quat(self.engine.configuration.data.xquat[body_id], scalar_first=True),
+            )
+        self._relative_reference = reference
+
+    def _adjust_relative_targets(self):
+        if self._relative_reference is None:
+            raise ValueError("relative task reference is unavailable")
+        scale = self.config.get("relative_position_scale", 0.5)
+        for name, (source_pos, source_rot, robot_pos, robot_rot) in self._relative_reference.items():
+            pos, quat = self.engine.scaled_human_data[name]
+            adjusted_pos = robot_pos + scale * (np.asarray(pos) - source_pos)
+            adjusted_quat = (Rotation.from_quat(quat, scalar_first=True) * source_rot.inv() * robot_rot).as_quat(scalar_first=True)
+            self.engine.human_body_to_task1[name].set_target(
+                mink.SE3.from_rotation_and_translation(mink.SO3(adjusted_quat), adjusted_pos)
+            )
+            self.engine.scaled_human_data[name] = [adjusted_pos, adjusted_quat]
 
     def step(self, request):
         from eva_body_contract import GmrResult, validate_feedback
@@ -110,17 +160,23 @@ class BodyBackend:
                                           joint_space=self.config["joint_space"], joint_map=self.config["joint_map"])
             q = self.engine.model.qpos0.copy()
             values = np.asarray(feedback.joint_positions, dtype=float)
+            effective_limits = []
+            model_values = values.copy()
             for i, row in enumerate(self.joints):
                 jid = self.engine.model.joint(row["vendor_name"]).id
                 lower, upper = row["lower"], row["upper"]
                 if self.engine.model.jnt_limited[jid]:
                     lo, hi = self.engine.model.jnt_range[jid]
                     lower, upper = max(lower, lo), min(upper, hi)
-                if not lower - 1e-7 <= values[i] <= upper + 1e-7:
+                key = "feedback_gripper_limit_tolerance_m" if i in (7, 15) else "feedback_joint_limit_tolerance_rad"
+                tolerance = max(1e-7, self.config.get(key, 0.0))
+                if not lower - tolerance <= values[i] <= upper + tolerance:
                     return fail(f"feedback outside model limits: {row['clean_name']}")
-            q[self.addresses] = values
+                model_values[i] = np.clip(values[i], lower, upper)
+                effective_limits.append((lower, upper))
+            q[self.addresses] = model_values
             for side, index in (("left", 7), ("right", 15)):
-                q[self.engine.model.joint(f"{side}_gripper_right_finger_joint").qposadr[0]] = values[index]
+                q[self.engine.model.joint(f"{side}_gripper_right_finger_joint").qposadr[0]] = model_values[index]
             if feedback.base_pose_xyyaw is not None:
                 for name, value in zip(("base_x", "base_y", "base_yaw"), feedback.base_pose_xyyaw, strict=True):
                     q[self.engine.model.joint(name).qposadr[0]] = value
@@ -140,15 +196,16 @@ class BodyBackend:
                 root_offset = self.engine.pos_offsets1["Hips"]
                 translation = target - (rotation * hips_rot).apply(root_offset) - rotation.apply(hips_pos)
                 self._transform = (rotation, translation)
+                if self.config.get("relative_task_alignment", False):
+                    self._capture_relative_reference(self._mapped_poses(poses, rotation, translation))
                 self._session, self._reference_space = obs.session_id, obs.reference_space
                 self._sequence, self._frame_seq = obs.sample_sequence, obs.frame_seq
                 return GmrResult("idle")
             rotation, translation = self._transform
-            needed = self.engine.human_scale_table
-            mapped = {name: [rotation.apply(poses[name][0]) + translation,
-                             (rotation * Rotation.from_quat(poses[name][1], scalar_first=True)).as_quat(scalar_first=True)] for name in needed}
+            mapped = self._mapped_poses(poses, rotation, translation)
             start = time.monotonic()
-            solved = self.engine.retarget(mapped)
+            adjuster = self._adjust_relative_targets if self.config.get("relative_task_alignment", False) else None
+            solved = self.engine.retarget(mapped, target_adjuster=adjuster)
             if time.monotonic() - start > self.config["max_solve_s"]:
                 return fail("solver exceeded time budget")
             now = time.monotonic_ns()
@@ -165,7 +222,11 @@ class BodyBackend:
                 output[index] = self.config["gripper_trigger_zero_m"] + trigger * (self.config["gripper_trigger_one_m"] - self.config["gripper_trigger_zero_m"])
             for i, row in enumerate(self.joints):
                 delta = self.config["max_gripper_delta_m" if i in (7, 15) else "max_joint_delta_rad"]
-                output[i] = np.clip(output[i], max(row["lower"], values[i] - delta), min(row["upper"], values[i] + delta))
+                lower, upper = effective_limits[i]
+                lower, upper = max(lower, values[i] - delta), min(upper, values[i] + delta)
+                if lower > upper:
+                    return fail(f"no valid target within step limit: {row['clean_name']}")
+                output[i] = np.clip(output[i], lower, upper)
             self._sequence, self._frame_seq = obs.sample_sequence, obs.frame_seq
             base_target = None
             if self.config.get("output_base_target") is True:

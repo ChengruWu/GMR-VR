@@ -183,9 +183,11 @@ class GeneralMotionRetargeting:
                     mink.SE3.from_rotation_and_translation(mink.SO3(rot), pos)
                 )
 
-    def retarget(self, human_data, offset_to_ground=False):
+    def retarget(self, human_data, offset_to_ground=False, target_adjuster=None):
         # Update the task targets
         self.update_targets(human_data, offset_to_ground)
+        if target_adjuster is not None:
+            target_adjuster()
 
         if self.use_ik_match_table1:
             # Solve the IK problem
