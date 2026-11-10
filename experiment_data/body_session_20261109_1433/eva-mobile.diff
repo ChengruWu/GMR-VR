@@ -1,0 +1,254 @@
+﻿diff --git a/src/teleop_client/vr/body_gmr.py b/src/teleop_client/vr/body_gmr.py
+index eafef5f..788450d 100644
+--- a/src/teleop_client/vr/body_gmr.py
++++ b/src/teleop_client/vr/body_gmr.py
+@@ -263,7 +263,7 @@ class BodyGmrClient(VrTeleopClient):
+         feedback = RobotFeedback(
+             tuple(qpos),
+             int((context.now - age) * 1e9),
+-            None if context.base_pose is None else tuple(context.base_pose),
++            None if context.base_pose is None else tuple(float(v) for v in context.base_pose),
+         )
+         try:
+             validate_feedback(feedback)
+diff --git a/tests/integration/test_body_gmr_execution.py b/tests/integration/test_body_gmr_execution.py
+index fcae5fb..37b10f9 100644
+--- a/tests/integration/test_body_gmr_execution.py
++++ b/tests/integration/test_body_gmr_execution.py
+@@ -2,15 +2,19 @@
+ 
+ import json
+ import time
++from pathlib import Path
+ from types import SimpleNamespace
+ 
+ import numpy as np
++import pytest
+ 
+ from core.app.handlers import teleop
+ from eva_body_contract import LUNA_JOINTS, GmrResult
+ from examples.input_sources.vr_webxr.node import normalize_browser_frame
+ from tests.integration.test_body_gmr_pipeline import browser_frame, make_client
+ 
++pytestmark = pytest.mark.integration
++
+ 
+ def test_body_joint_command_reaches_transport_without_kinematics(monkeypatch):
+     class Backend:
+@@ -51,6 +55,63 @@ def test_body_joint_command_reaches_transport_without_kinematics(monkeypatch):
+     assert np.isclose(published.qpos[7], 0.1)
+ 
+ 
++def test_body_disconnect_stops_publication_and_requires_reset_on_reconnect():
++    class Backend:
++        def reset(self):
++            pass
++
++        def step(self, request):
++            return GmrResult("ok", dict.fromkeys(LUNA_JOINTS, 0.0))
++
++    class Transport:
++        def __init__(self):
++            self.commands = []
++
++        def get_latest_teleop_feedback(self):
++            return {"qpos": np.zeros(24), "receipt_age_s": 0.01, "disabled_groups": []}
++
++        def publish_action(self, action, **kwargs):
++            self.commands.append(action.copy())
++
++    client = make_client()
++    client._backend = Backend()
++    frame, _ = normalize_browser_frame(browser_frame(), session_id="session")
++    for side in ("left", "right"):
++        frame["controllers"][side]["grip_engaged"] = True
++    client._ingest(json.dumps(frame).encode())
++    transport = Transport()
++    runtime = SimpleNamespace(
++        robot=SimpleNamespace(name="gento_luna", total_action_dim=24, gripper_indices=(7, 15)),
++        transport=transport,
++    )
++    state = teleop.TeleopExecutionState(active=True)
++    assert teleop._step_active_teleop(None, runtime, state, client, time.monotonic()) is not None
++    client._ingest({"protocol": "eva.teleop.vr", "version": 3, "type": "heartbeat",
++                    "session_id": "session", "browser_connected": False,
++                    "source_error": "headset disconnected"})
++    assert teleop._step_active_teleop(None, runtime, state, client, time.monotonic()) is None
++    assert len(transport.commands) == 1
++    frame["seq"] += 1
++    frame["body"]["sample_sequence"] += 1
++    client._ingest(json.dumps(frame).encode())
++    assert teleop._step_active_teleop(None, runtime, state, client, time.monotonic()) is None
++    assert len(transport.commands) == 1
++    for side in ("left", "right"):
++        frame["controllers"][side]["grip_engaged"] = False
++    frame["seq"] += 1
++    frame["body"]["sample_sequence"] += 1
++    client._ingest(json.dumps(frame).encode())
++    assert teleop._step_active_teleop(None, runtime, state, client, time.monotonic()) is None
++    for side in ("left", "right"):
++        frame["controllers"][side]["grip_engaged"] = True
++    frame["seq"] += 1
++    frame["body"]["sample_sequence"] += 1
++    client._ingest(json.dumps(frame).encode())
++    assert teleop._step_active_teleop(None, runtime, state, client, time.monotonic()) is None
++    assert "reset" in state.last_fault
++    assert len(transport.commands) == 1
++
++
+ def test_body_client_skips_ik_prewarm(monkeypatch):
+     client = make_client()
+     runtime = SimpleNamespace(teleop_client=client, ik_solver=None)
+@@ -62,6 +123,69 @@ def test_body_client_skips_ik_prewarm(monkeypatch):
+     assert runtime.ik_solver is None
+ 
+ 
++def test_real_body_backend_accepts_model_feedback_after_command():
++    mujoco = pytest.importorskip("mujoco")
++    gmr = pytest.importorskip("gmr_body")
++    yaml = pytest.importorskip("yaml")
++    backend = gmr.create_backend()
++    # Synthetic kinematic exercise only; production defaults remain unchanged.
++    backend.config.update(
++        allow_unvalidated_output=True, max_solve_s=10,
++        max_input_age_s=10, max_feedback_age_s=10,
++    )
++    client = make_client()
++    client._backend = backend
++    client._input_timeout_s = 10
++    data = mujoco.MjData(backend.engine.model)
++
++    class ModelTransport:
++        def __init__(self):
++            profile = Path(__file__).resolve().parents[2] / "examples/hardware/gento_luna/config.yaml"
++            config = yaml.safe_load(profile.read_text(encoding="utf-8"))
++            self.qpos = np.asarray(
++                config["robot"]["gento_luna"]["config"]["robot"]["initial_qpos"], dtype=float
++            )
++            self.commands = []
++
++        def get_latest_teleop_feedback(self):
++            return {"qpos": self.qpos.copy(), "receipt_age_s": 0.01, "disabled_groups": []}
++
++        def publish_action(self, action, **kwargs):
++            self.qpos = np.asarray(action).copy()
++            self.commands.append(self.qpos.copy())
++            data.qpos[backend.addresses] = self.qpos
++            mujoco.mj_forward(backend.engine.model, data)
++
++    transport = ModelTransport()
++    runtime = SimpleNamespace(
++        robot=SimpleNamespace(name="gento_luna", total_action_dim=24, gripper_indices=(7, 15)),
++        transport=transport,
++    )
++    state = teleop.TeleopExecutionState(active=True)
++    positions = {
++        "pelvis": (0, 1, 0), "spine3": (0, 1.4, 0), "head": (0, 1.7, 0),
++        "left_shoulder": (-0.2, 1.4, 0), "right_shoulder": (0.2, 1.4, 0),
++        "left_elbow": (-0.4, 1.2, 0), "right_elbow": (0.4, 1.2, 0),
++        "left_wrist": (-0.5, 1, 0), "right_wrist": (0.5, 1, 0),
++    }
++    for seq in range(1, 4):
++        raw = browser_frame()
++        raw["seq"] = seq
++        raw["body"].update(
++            sample_sequence=seq, units="metres", joint_space="base_space",
++            orientation_order="xyzw", runtime_all_joint_locations_valid=True,
++        )
++        for joint in raw["body"]["joints"]:
++            joint["position"] = positions.get(joint["name"], (0, 1, 0))
++        frame, _ = normalize_browser_frame(raw, session_id="synthetic-sim")
++        for side in ("left", "right"):
++            frame["controllers"][side]["grip_engaged"] = True
++        client._ingest(json.dumps(frame).encode())
++        teleop._step_active_teleop(None, runtime, state, client, time.monotonic())
++    assert len(transport.commands) == 2, state.last_fault
++    assert np.isfinite(data.qpos).all()
++
++
+ def test_body_base_target_reaches_transport_and_idle_stops_base():
+     class Backend:
+         def reset(self):
+diff --git a/tests/integration/test_body_gmr_pipeline.py b/tests/integration/test_body_gmr_pipeline.py
+index cd3000d..cab4eaa 100644
+--- a/tests/integration/test_body_gmr_pipeline.py
++++ b/tests/integration/test_body_gmr_pipeline.py
+@@ -12,6 +12,8 @@ from examples.input_sources.vr_webxr.node import BrowserProtocolError, normalize
+ from teleop_client.base import QposCommand, TeleopClientError, TeleopContext, TeleopResultKind
+ from teleop_client.vr.body_gmr import BodyGmrClient
+ 
++pytestmark = pytest.mark.integration
++
+ 
+ def browser_frame():
+     hand = {
+@@ -85,6 +87,8 @@ def test_existing_bridge_to_gmr_joint_command():
+             assert request.observation.reference_space == "Local"
+             assert request.observation.sample_sequence == 5
+             assert request.feedback.joint_positions == (0.0,) * 24
++            assert request.feedback.base_pose_xyyaw == (1.0, 2.0, 0.0)
++            assert all(type(value) is float for value in request.feedback.base_pose_xyyaw)
+             return GmrResult("ok", dict.fromkeys(LUNA_JOINTS, 0.1))
+ 
+     client = make_client()
+@@ -95,6 +99,7 @@ def test_existing_bridge_to_gmr_joint_command():
+         measured_eef=np.empty(0),
+         now=time.monotonic(),
+         base_feedback_age_s=0.01,
++        base_pose=np.array([1.0, 2.0, 0.0], dtype=np.float32),
+     )
+     result = client.poll(context)
+     assert result.kind is TeleopResultKind.COMMAND
+@@ -116,6 +121,39 @@ def test_bridge_rejects_bad_body_without_affecting_legacy_frames():
+     assert "body" not in normalize_browser_frame(frame, session_id="session")[0]
+ 
+ 
++def test_runtime_valid_flags_do_not_allow_missing_joint_orientations():
++    # PICO firmware can report all joints valid even when their quaternions are zero.
++    # EVA-VR forwards those orientations as null while preserving the runtime flags.
++    raw = browser_frame()
++    raw["body"]["runtime_all_joint_locations_valid"] = True
++    raw["body"]["status"] = "tracking incomplete"
++    for joint in raw["body"]["joints"]:
++        joint["location_flags"] = 15
++        joint["orientation_xyzw"] = None
++    frame, _ = normalize_browser_frame(raw, session_id="session")
++    for hand in ("left", "right"):
++        frame["controllers"][hand]["grip_engaged"] = True
++
++    class Backend:
++        def reset(self):
++            pass
++
++        def step(self, request):
++            pytest.fail("incomplete tracking must not reach the solver")
++
++    client = make_client()
++    client._backend = Backend()
++    client._ingest(json.dumps(frame).encode())
++    context = TeleopContext(
++        measured_qpos=np.zeros(24), measured_eef=np.empty(0),
++        now=time.monotonic(), base_feedback_age_s=0.01,
++    )
++    result = client.poll(context)
++    assert result.kind is TeleopResultKind.REJECTED
++    assert "incomplete" in result.message
++    assert result.command is None
++
++
+ def test_missing_backend_fails_explicitly():
+     client = make_client()
+     with pytest.raises(TeleopClientError, match="backend unavailable"):
+diff --git a/tests/unit/test_body_contract.py b/tests/unit/test_body_contract.py
+index 527f838..e0c35c4 100644
+--- a/tests/unit/test_body_contract.py
++++ b/tests/unit/test_body_contract.py
+@@ -19,6 +19,8 @@ from eva_body_contract import (
+     validate_feedback,
+ )
+ 
++pytestmark = pytest.mark.unit
++
+ 
+ def recording():
+     return {

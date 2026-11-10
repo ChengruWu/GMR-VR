@@ -1,0 +1,338 @@
+﻿diff --git a/docs/eva-body-development.md b/docs/eva-body-development.md
+index 2a3fb5d..58cbd1e 100644
+--- a/docs/eva-body-development.md
++++ b/docs/eva-body-development.md
+@@ -12,6 +12,14 @@
+ 
+ 当前 EVA-VR 源码发送 `units=metres` 和 `joint_space=base_space`；配置将它们解释为米和相对于同一参考空间的全局姿态。这是待验证的约定，不代表已验证设备输出。元数据有值时，若与配置不符会拒绝。
+ 
++2026-11-09 联调发现旧实验模型支撑链 J2/J3/J4 的窄范围与 EVA 仿真初始站姿冲突，J1/J5 的窄范围也在合成动态测试中拒绝了仿真反馈；现将这五个范围与随包关节表及 EVA 仿真模型对齐，其余旧模型约束不变。输出同时限于关节表与模型范围的交集。此更改解决已发现的仿真反馈范围冲突，并未验证扩大后的运动范围、碰撞或实机安全。
++
++`feedback_gripper_limit_tolerance_m` 默认 0，允许的配置范围为 0 到 0.001 米；仅对两侧夹爪反馈的边界做容差检查，其余关节不变。容差内的越界反馈在求解器模型内投影到边界，但原始反馈仍用于单步限幅；超过容差立即要求重置。MuJoCo 的软限位仿真可在独立配置中显式设为 0.001，依据见 EVA 的 `2026-10-26-m2-live-freeze-limit-tolerance.md`。该仿真值不构成实机反馈或停车策略的验收。
++
++`feedback_joint_limit_tolerance_rad` 为其他关节的独立可选容差，默认 0，配置上限为 0.001 弧度，适用同样的模型内投影和超限重置行为。它依据同一仿真软限位记录，并不解决更大幅度的动态超限；不得据此认定实机安全。
++
++`relative_task_alignment` 默认关闭。仅用于受控仿真时可启用：首次有效帧以机器人实测初始姿态为每个 IK 任务建立参考，此后的目标由人体相对位姿变化驱动；`relative_position_scale` 对位移做 0 到 1 的比例缩放（不包括 0，默认值 0.5，仅在启用该模式时生效），姿态变化不缩放。会话重置会清除参考；不支持第二套 IK 任务表。它是单次站姿参考，并非已验证的多姿态或跨使用者标定。不能由短时离线回放推断完整动作可达性、碰撞、停车或硬件安全。
++
+ 构建：`uv run --no-project --python 3.11 --with build --with setuptools --with wheel python packaging/body/build.py`。wheel 位于 `packaging/body/dist/`，需在运行 EVA 的 Python 环境安装；EVA 提供 `eva_body_contract` 类型，包不复制该模块。构建产物包含私有 GMR 求解器、Luna XML、49 个网格、配置、关节表和仓库 MIT 许可证；Luna 模型及网格的来源和再分发许可仍须另行核验。
+ 
+ 本次 Windows Python 3.11 验证中，仓库 `tests` 13 项通过，独立安装 wheel 后的 EVA 契约和真实模型合成测试 3 项通过；EVA 相关接口与执行测试 13 项通过。依赖版本尚未为该独立包生成锁文件，构建可复现性和其他依赖版本组合仍需验证。
+diff --git a/general_motion_retargeting/motion_retarget.py b/general_motion_retargeting/motion_retarget.py
+index 8be2f72..7aee5c9 100644
+--- a/general_motion_retargeting/motion_retarget.py
++++ b/general_motion_retargeting/motion_retarget.py
+@@ -183,9 +183,11 @@ class GeneralMotionRetargeting:
+                     mink.SE3.from_rotation_and_translation(mink.SO3(rot), pos)
+                 )
+ 
+-    def retarget(self, human_data, offset_to_ground=False):
++    def retarget(self, human_data, offset_to_ground=False, target_adjuster=None):
+         # Update the task targets
+         self.update_targets(human_data, offset_to_ground)
++        if target_adjuster is not None:
++            target_adjuster()
+ 
+         if self.use_ik_match_table1:
+             # Solve the IK problem
+diff --git a/gmr_body/backend.py b/gmr_body/backend.py
+index c5e827e..93afe0d 100644
+--- a/gmr_body/backend.py
++++ b/gmr_body/backend.py
+@@ -7,6 +7,7 @@ import time
+ from pathlib import Path
+ 
+ import numpy as np
++import mink
+ from mink.limits import Constraint, Limit
+ from scipy.spatial.transform import Rotation
+ 
+@@ -38,6 +39,18 @@ class BodyBackend:
+ 
+         path = Path(config_path or os.environ.get("GMR_BODY_CONFIG", RESOURCES / "body_config.json"))
+         self.config = json.loads(path.read_text(encoding="utf-8"))
++        for key in ("feedback_gripper_limit_tolerance_m", "feedback_joint_limit_tolerance_rad"):
++            tolerance = self.config.get(key, 0.0)
++            if (isinstance(tolerance, bool) or not isinstance(tolerance, (int, float))
++                    or not math.isfinite(tolerance) or not 0 <= tolerance <= 0.001):
++                raise ValueError(f"{key} must be between 0 and 0.001")
++        enabled = self.config.get("relative_task_alignment", False)
++        if not isinstance(enabled, bool):
++            raise ValueError("relative_task_alignment must be boolean")
++        scale = self.config.get("relative_position_scale", 0.5)
++        if (isinstance(scale, bool) or not isinstance(scale, (int, float))
++                or not math.isfinite(scale) or not 0 < scale <= 1):
++            raise ValueError("relative_position_scale must be greater than 0 and at most 1")
+         self.contract = json.loads((RESOURCES / "gento_luna" / "joint_limits.json").read_text(encoding="utf-8"))
+         self.joints = sorted((r for r in self.contract if r["ctrl_index_24d"] is not None),
+                              key=lambda r: r["ctrl_index_24d"])
+@@ -61,11 +74,48 @@ class BodyBackend:
+         self._frame_seq = None
+         self._reference_space = None
+         self._transform = None
++        self._relative_reference = None
+         self._locked = False
+ 
+     def close(self):
+         self.reset()
+ 
++    def _mapped_poses(self, poses, rotation, translation):
++        return {name: [rotation.apply(poses[name][0]) + translation,
++                       (rotation * Rotation.from_quat(poses[name][1], scalar_first=True)).as_quat(scalar_first=True)]
++                for name in self.engine.human_scale_table}
++
++    def _capture_relative_reference(self, mapped):
++        if self.engine.use_ik_match_table2:
++            raise ValueError("relative task alignment does not support a second task table")
++        self.engine.update_targets(mapped)
++        reference = {}
++        for robot_name, row in self.engine.ik_match_table1.items():
++            name = row[0]
++            if name not in self.engine.human_body_to_task1:
++                continue
++            pos, quat = self.engine.scaled_human_data[name]
++            body_id = self.engine.model.body(robot_name).id
++            reference[name] = (
++                np.asarray(pos).copy(), Rotation.from_quat(quat, scalar_first=True),
++                self.engine.configuration.data.xpos[body_id].copy(),
++                Rotation.from_quat(self.engine.configuration.data.xquat[body_id], scalar_first=True),
++            )
++        self._relative_reference = reference
++
++    def _adjust_relative_targets(self):
++        if self._relative_reference is None:
++            raise ValueError("relative task reference is unavailable")
++        scale = self.config.get("relative_position_scale", 0.5)
++        for name, (source_pos, source_rot, robot_pos, robot_rot) in self._relative_reference.items():
++            pos, quat = self.engine.scaled_human_data[name]
++            adjusted_pos = robot_pos + scale * (np.asarray(pos) - source_pos)
++            adjusted_quat = (Rotation.from_quat(quat, scalar_first=True) * source_rot.inv() * robot_rot).as_quat(scalar_first=True)
++            self.engine.human_body_to_task1[name].set_target(
++                mink.SE3.from_rotation_and_translation(mink.SO3(adjusted_quat), adjusted_pos)
++            )
++            self.engine.scaled_human_data[name] = [adjusted_pos, adjusted_quat]
++
+     def step(self, request):
+         from eva_body_contract import GmrResult, validate_feedback
+ 
+@@ -110,17 +160,23 @@ class BodyBackend:
+                                           joint_space=self.config["joint_space"], joint_map=self.config["joint_map"])
+             q = self.engine.model.qpos0.copy()
+             values = np.asarray(feedback.joint_positions, dtype=float)
++            effective_limits = []
++            model_values = values.copy()
+             for i, row in enumerate(self.joints):
+                 jid = self.engine.model.joint(row["vendor_name"]).id
+                 lower, upper = row["lower"], row["upper"]
+                 if self.engine.model.jnt_limited[jid]:
+                     lo, hi = self.engine.model.jnt_range[jid]
+                     lower, upper = max(lower, lo), min(upper, hi)
+-                if not lower - 1e-7 <= values[i] <= upper + 1e-7:
++                key = "feedback_gripper_limit_tolerance_m" if i in (7, 15) else "feedback_joint_limit_tolerance_rad"
++                tolerance = max(1e-7, self.config.get(key, 0.0))
++                if not lower - tolerance <= values[i] <= upper + tolerance:
+                     return fail(f"feedback outside model limits: {row['clean_name']}")
+-            q[self.addresses] = values
++                model_values[i] = np.clip(values[i], lower, upper)
++                effective_limits.append((lower, upper))
++            q[self.addresses] = model_values
+             for side, index in (("left", 7), ("right", 15)):
+-                q[self.engine.model.joint(f"{side}_gripper_right_finger_joint").qposadr[0]] = values[index]
++                q[self.engine.model.joint(f"{side}_gripper_right_finger_joint").qposadr[0]] = model_values[index]
+             if feedback.base_pose_xyyaw is not None:
+                 for name, value in zip(("base_x", "base_y", "base_yaw"), feedback.base_pose_xyyaw, strict=True):
+                     q[self.engine.model.joint(name).qposadr[0]] = value
+@@ -140,15 +196,16 @@ class BodyBackend:
+                 root_offset = self.engine.pos_offsets1["Hips"]
+                 translation = target - (rotation * hips_rot).apply(root_offset) - rotation.apply(hips_pos)
+                 self._transform = (rotation, translation)
++                if self.config.get("relative_task_alignment", False):
++                    self._capture_relative_reference(self._mapped_poses(poses, rotation, translation))
+                 self._session, self._reference_space = obs.session_id, obs.reference_space
+                 self._sequence, self._frame_seq = obs.sample_sequence, obs.frame_seq
+                 return GmrResult("idle")
+             rotation, translation = self._transform
+-            needed = self.engine.human_scale_table
+-            mapped = {name: [rotation.apply(poses[name][0]) + translation,
+-                             (rotation * Rotation.from_quat(poses[name][1], scalar_first=True)).as_quat(scalar_first=True)] for name in needed}
++            mapped = self._mapped_poses(poses, rotation, translation)
+             start = time.monotonic()
+-            solved = self.engine.retarget(mapped)
++            adjuster = self._adjust_relative_targets if self.config.get("relative_task_alignment", False) else None
++            solved = self.engine.retarget(mapped, target_adjuster=adjuster)
+             if time.monotonic() - start > self.config["max_solve_s"]:
+                 return fail("solver exceeded time budget")
+             now = time.monotonic_ns()
+@@ -165,7 +222,8 @@ class BodyBackend:
+                 output[index] = self.config["gripper_trigger_zero_m"] + trigger * (self.config["gripper_trigger_one_m"] - self.config["gripper_trigger_zero_m"])
+             for i, row in enumerate(self.joints):
+                 delta = self.config["max_gripper_delta_m" if i in (7, 15) else "max_joint_delta_rad"]
+-                output[i] = np.clip(output[i], max(row["lower"], values[i] - delta), min(row["upper"], values[i] + delta))
++                lower, upper = effective_limits[i]
++                output[i] = np.clip(output[i], max(lower, values[i] - delta), min(upper, values[i] + delta))
+             self._sequence, self._frame_seq = obs.sample_sequence, obs.frame_seq
+             base_target = None
+             if self.config.get("output_base_target") is True:
+diff --git a/gmr_body/resources/body_config.json b/gmr_body/resources/body_config.json
+index ef4453c..434d0c2 100644
+--- a/gmr_body/resources/body_config.json
++++ b/gmr_body/resources/body_config.json
+@@ -7,6 +7,8 @@
+   "source_joint_space": "base_space",
+   "allow_unvalidated_output": false,
+   "output_base_target": false,
++  "relative_task_alignment": false,
++  "relative_position_scale": 0.5,
+   "joint_map": {
+     "pelvis": "Hips", "spine3": "Chest", "head": "Head",
+     "left_shoulder": "LeftShoulder", "right_shoulder": "RightShoulder",
+@@ -22,6 +24,8 @@
+   "max_solve_s": 0.2,
+   "max_joint_delta_rad": 0.05,
+   "max_gripper_delta_m": 0.002,
++  "feedback_gripper_limit_tolerance_m": 0.0,
++  "feedback_joint_limit_tolerance_rad": 0.0,
+   "gripper_trigger_zero_m": 0.0,
+   "gripper_trigger_one_m": 0.05,
+   "solver": "daqp"
+diff --git a/gmr_body/resources/gento_luna/luna_full.xml b/gmr_body/resources/gento_luna/luna_full.xml
+index 4d43757..43d64a9 100644
+--- a/gmr_body/resources/gento_luna/luna_full.xml
++++ b/gmr_body/resources/gento_luna/luna_full.xml
+@@ -183,27 +183,27 @@
+       </body>
+       <body name="Gento Luna_Leg_J1_Link" pos="0.107 0 0.16" quat="0.499998 0.5 0.500002 0.5">
+         <inertial pos="-0.00305605 0.118796 0.00090574" quat="0.702449 0.711578 -0.0138067 -0.00562895" mass="6.04186" diaginertia="0.0501725 0.046065 0.0191557" />
+-        <joint name="Gento Luna_Leg_J1_Joint" range="-0.0017453292519943296 0.0017453292519943296" actuatorfrcrange="-217 217" />
++        <joint name="Gento Luna_Leg_J1_Joint" range="-0.191986218 0.191986218" actuatorfrcrange="-217 217" />
+         <geom quat="1 0 0 0" type="mesh" contype="0" conaffinity="0" group="1" rgba="0 1 0 1" density="0" mesh="mesh_c7d6370894b187f7" />
+         <geom quat="1 0 0 0" type="mesh" rgba="0 1 0 1" mesh="mesh_c7d6370894b187f7" />
+         <body name="Gento Luna_Leg_J2_Link" pos="0 0.165 0" quat="0.707105 0 -0.707108 0">
+           <inertial pos="0.00164163 0.204806 0.00707016" quat="0.721809 0.69199 0.00892171 -0.00785122" mass="7.22131" diaginertia="0.136259 0.134381 0.0260726" />
+-          <joint name="Gento Luna_Leg_J2_Joint" range="-0.0017453292519943296 0.0017453292519943296" actuatorfrcrange="-217 217" />
++          <joint name="Gento Luna_Leg_J2_Joint" range="-1.570796327 1.570796327" actuatorfrcrange="-217 217" />
+           <geom pos="0 0 0" quat="1 0 0 0" type="mesh" contype="0" conaffinity="0" group="1" rgba="0 0 1 1" density="0" mesh="mesh_3beb7f52f70edaf5" />
+           <geom pos="0 0 0" quat="1 0 0 0" type="mesh" rgba="0 0 1 1" mesh="mesh_3beb7f52f70edaf5" />
+           <body name="Gento Luna_Leg_J3_Link" pos="0 0.3 0">
+             <inertial pos="-0.00357006 0.145736 -0.00024996" quat="0.707266 0.706918 0.00473186 0.00443219" mass="4.67122" diaginertia="0.0982253 0.0882848 0.0305314" />
+-            <joint name="Gento Luna_Leg_J3_Joint" range="-0.17453292519943295 0" actuatorfrcrange="-217 217" />
++            <joint name="Gento Luna_Leg_J3_Joint" range="-2.443460953 1.047197551" actuatorfrcrange="-217 217" />
+             <geom pos="0 0 0" quat="1 0 0 0" type="mesh" contype="0" conaffinity="0" group="1" rgba="1 0 0 1" density="0" mesh="mesh_d2326888a320adc3" />
+             <geom pos="0 0 0" quat="1 0 0 0" type="mesh" rgba="1 0 0 1" mesh="mesh_d2326888a320adc3" />
+             <body name="Gento Luna_Leg_J4_Link" pos="0 0.3 0">
+               <inertial pos="-0.0369066 -7.427e-05 0.0101986" quat="0.470941 0.527882 0.527316 0.470631" mass="5.90046" diaginertia="0.0299755 0.0291456 0.0100734" />
+-              <joint name="Gento Luna_Leg_J4_Joint" range="0 0.17453292519943295" actuatorfrcrange="-108 108" />
++              <joint name="Gento Luna_Leg_J4_Joint" range="-0.959931089 1.919862177" actuatorfrcrange="-108 108" />
+               <geom quat="1 0 0 0" type="mesh" contype="0" conaffinity="0" group="1" rgba="0 1 0 1" density="0" mesh="mesh_5f72e6a1449a67e0" />
+               <geom quat="1 0 0 0" type="mesh" rgba="0 1 0 1" mesh="mesh_5f72e6a1449a67e0" />
+               <body name="Gento Luna_Leg_J5_Link" quat="0.707105 0 0.707108 0">
+                 <inertial pos="-0.00154757 0.127669 -0.015651" quat="0.92749 0.373709 0.00372639 -0.00945883" mass="3.76178" diaginertia="0.0342898 0.0242016 0.016757" />
+-                <joint name="Gento Luna_Leg_J5_Joint" range="-0.13962634015954636 0.13962634015954636" actuatorfrcrange="-108 108" />
++                <joint name="Gento Luna_Leg_J5_Joint" range="-0.523598776 0.523598776" actuatorfrcrange="-108 108" />
+                 <geom type="mesh" contype="0" conaffinity="0" group="1" rgba="0 0 1 1" density="0" mesh="mesh_c59a3e3c25fe7dfc" />
+                 <geom type="mesh" rgba="0 0 1 1" mesh="mesh_c59a3e3c25fe7dfc" />
+                 <body name="Gento Luna_Leg_J6_Link" quat="0.499998 -0.5 -0.5 -0.500002">
+diff --git a/tests/test_body_backend.py b/tests/test_body_backend.py
+index 40fbd68..5015e18 100644
+--- a/tests/test_body_backend.py
++++ b/tests/test_body_backend.py
+@@ -41,9 +41,17 @@ def test_body_backend_uses_feedback_and_rejects_reset_conditions():
+     assert len(ordered) == 24
+     assert np.isfinite(ordered).all()
+     assert np.max(np.abs(np.asarray(ordered) - second.feedback.joint_positions)) <= 0.050001
+-    assert backend.step(second).status == "idle"
+-    changed = replace(second.observation, session_id="other", sample_sequence=3)
+-    assert backend.step(replace(second, observation=changed)).status == "reset_required"
++    for i, row in enumerate(backend.joints):
++        jid = backend.engine.model.joint(row["vendor_name"]).id
++        if backend.engine.model.jnt_limited[jid]:
++            low, high = backend.engine.model.jnt_range[jid]
++            assert low <= ordered[i] <= high
++    next_request = make_request(backend, 3)
++    next_request = replace(next_request, feedback=replace(next_request.feedback, joint_positions=ordered))
++    assert backend.step(next_request).status == "ok"
++    assert backend.step(next_request).status == "idle"
++    changed = replace(next_request.observation, session_id="other", sample_sequence=4)
++    assert backend.step(replace(next_request, observation=changed)).status == "reset_required"
+     assert backend.step(make_request(backend, 4)).status == "reset_required"
+     backend.reset()
+     assert backend.step(make_request(backend, 5)).status == "idle"
+@@ -61,6 +69,79 @@ def test_body_backend_rejects_stale_feedback_and_lost_grip():
+     assert backend.step(replace(make_request(backend, 2), controllers=controllers)).status == "reset_required"
+ 
+ 
++def test_gripper_soft_limit_tolerance_is_opt_in_and_bounded():
++    backend = create_backend()
++    backend.config.update(allow_unvalidated_output=True, max_input_age_s=10, max_feedback_age_s=10)
++
++    def with_gripper(value, sequence):
++        request = make_request(backend, sequence)
++        qpos = list(request.feedback.joint_positions)
++        qpos[7] = value
++        return replace(request, feedback=replace(request.feedback, joint_positions=tuple(qpos)))
++
++    assert backend.step(with_gripper(-0.0005, 1)).status == "reset_required"
++    backend.reset()
++    backend.config["feedback_gripper_limit_tolerance_m"] = 0.001
++    assert backend.step(with_gripper(-0.0005, 2)).status == "idle"
++    assert backend.engine.configuration.q[backend.addresses[7]] == 0.0
++    assert backend.step(with_gripper(-0.0011, 3)).status == "reset_required"
++
++
++def test_simulation_torso_feedback_is_accepted():
++    backend = create_backend()
++    backend.config.update(allow_unvalidated_output=True, max_input_age_s=10, max_feedback_age_s=10)
++    request = make_request(backend, 1)
++    qpos = list(request.feedback.joint_positions)
++    qpos[16] = 0.0054  # Observed simulation feedback, inside the EVA model range.
++    qpos[20] = 0.15  # Inside EVA's range but outside the old experimental window.
++    request = replace(request, feedback=replace(request.feedback, joint_positions=tuple(qpos)))
++    assert backend.step(request).status == "idle"
++
++
++def test_joint_soft_limit_tolerance_is_opt_in_and_bounded():
++    backend = create_backend()
++    backend.config.update(allow_unvalidated_output=True, max_input_age_s=10, max_feedback_age_s=10)
++    index = 13  # joint6_r
++    joint = backend.engine.model.joint(backend.joints[index]["vendor_name"])
++    lower = max(backend.joints[index]["lower"], backend.engine.model.jnt_range[joint.id][0])
++
++    def with_value(value, sequence):
++        sample = make_request(backend, sequence)
++        qpos = list(sample.feedback.joint_positions)
++        qpos[index] = value
++        return replace(sample, feedback=replace(sample.feedback, joint_positions=tuple(qpos)))
++
++    assert backend.step(with_value(lower - 0.0005, 1)).status == "reset_required"
++    backend.reset()
++    backend.config["feedback_joint_limit_tolerance_rad"] = 0.001
++    assert backend.step(with_value(lower - 0.0005, 2)).status == "idle"
++    assert backend.engine.configuration.q[backend.addresses[index]] == lower
++    assert backend.step(with_value(lower - 0.0011, 3)).status == "reset_required"
++
++
++def test_relative_task_alignment_anchors_neutral_and_responds_to_motion():
++    backend = create_backend()
++    backend.config.update(allow_unvalidated_output=True, relative_task_alignment=True,
++                          relative_position_scale=0.5, max_solve_s=10,
++                          max_input_age_s=10, max_feedback_age_s=10)
++    first = make_request(backend, 1)
++    assert backend.step(first).status == "idle"
++    still = make_request(backend, 2)
++    result = backend.step(still)
++    assert result.status == "ok", result.reason
++    np.testing.assert_allclose(contract.ordered_targets(result), still.feedback.joint_positions, atol=1e-6)
++    moved = make_request(backend, 3)
++    joints = tuple(replace(j, position=(j.position[0], j.position[1] + 0.2, j.position[2]))
++                   if j.name == "left_wrist" else j for j in moved.observation.joints)
++    moved = replace(moved, observation=replace(moved.observation, joints=joints))
++    result = backend.step(moved)
++    assert result.status == "ok", result.reason
++    assert np.linalg.norm(np.asarray(contract.ordered_targets(result))[:7] - moved.feedback.joint_positions[:7]) > 1e-4
++    backend.reset()
++    assert backend._relative_reference is None
++    assert backend.step(make_request(backend, 4)).status == "idle"
++
++
+ def test_base_target_tracks_human_translation_from_measured_reference():
+     backend = create_backend()
+     backend.config.update(allow_unvalidated_output=True, output_base_target=True,
